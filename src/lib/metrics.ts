@@ -23,6 +23,110 @@
 
 import * as Sentry from "@sentry/nextjs";
 import { logger } from "@/lib/logger";
+import type { Gift, GiftStatus } from "@/types";
+
+// ── Gift funnel metrics (Prometheus) ──────────────────────────────────────────
+//
+// In-process counters and histograms for the create → pay → lock → claim
+// funnel, rendered in Prometheus text format by GET /api/metrics. Values are
+// per server instance; Prometheus aggregates across instances with sum().
+
+export type FunnelCounter =
+  "gifts_created" | "gifts_paid" | "gifts_locked" | "gifts_claimed" | "gifts_expired";
+
+type FunnelHistogram = "time_to_claim_seconds" | "payment_processing_seconds";
+
+const COUNTER_HELP: Record<FunnelCounter, string> = {
+  gifts_created: "Gifts created",
+  gifts_paid: "Gifts whose payment was confirmed",
+  gifts_locked: "Gifts locked in escrow",
+  gifts_claimed: "Gifts claimed by the recipient",
+  gifts_expired: "Unlocked gifts that expired unclaimed",
+};
+
+const HISTOGRAM_HELP: Record<FunnelHistogram, string> = {
+  time_to_claim_seconds: "Seconds from unlock to claim",
+  payment_processing_seconds: "Seconds from gift creation to payment confirmation",
+};
+
+const HISTOGRAM_BUCKETS: Record<FunnelHistogram, number[]> = {
+  // 1 min, 10 min, 1 h, 6 h, 1 d, 3 d, 7 d, 30 d, 90 d
+  time_to_claim_seconds: [60, 600, 3600, 21600, 86400, 259200, 604800, 2592000, 7776000],
+  // 5 s, 15 s, 30 s, 1 min, 5 min, 15 min, 1 h, 1 d
+  payment_processing_seconds: [5, 15, 30, 60, 300, 900, 3600, 86400],
+};
+
+const counters = new Map<FunnelCounter, number>();
+const histograms = new Map<FunnelHistogram, { buckets: number[]; sum: number; count: number }>();
+
+/** Increments a gift funnel counter. */
+export function incrementFunnelCounter(name: FunnelCounter, by = 1): void {
+  counters.set(name, (counters.get(name) ?? 0) + by);
+}
+
+/** Records one observation (in seconds) in a gift funnel histogram. */
+export function observeFunnelHistogram(name: FunnelHistogram, seconds: number): void {
+  const bounds = HISTOGRAM_BUCKETS[name];
+  const h = histograms.get(name) ?? { buckets: bounds.map(() => 0), sum: 0, count: 0 };
+  bounds.forEach((le, i) => {
+    if (seconds <= le) h.buckets[i]++;
+  });
+  h.sum += seconds;
+  h.count++;
+  histograms.set(name, h);
+}
+
+/**
+ * Updates funnel metrics for a gift status change. Called from the gift
+ * service whenever a status transition succeeds.
+ */
+export function recordFunnelTransition(
+  gift: Gift,
+  fromStatus: GiftStatus,
+  toStatus: GiftStatus
+): void {
+  const nowMs = Date.now();
+  if (fromStatus === "pending_payment" && (toStatus === "funded" || toStatus === "locked")) {
+    incrementFunnelCounter("gifts_paid");
+    observeFunnelHistogram("payment_processing_seconds", (nowMs - gift.createdAt.getTime()) / 1000);
+  }
+  if (toStatus === "locked") incrementFunnelCounter("gifts_locked");
+  if (toStatus === "claimed") {
+    incrementFunnelCounter("gifts_claimed");
+    observeFunnelHistogram(
+      "time_to_claim_seconds",
+      Math.max(0, (nowMs - gift.unlockAt.getTime()) / 1000)
+    );
+  }
+  if (toStatus === "expired") incrementFunnelCounter("gifts_expired");
+}
+
+/** Renders all funnel metrics in the Prometheus text exposition format. */
+export function renderPrometheusMetrics(): string {
+  const lines: string[] = [];
+  for (const name of Object.keys(COUNTER_HELP) as FunnelCounter[]) {
+    lines.push(`# HELP ${name}_total ${COUNTER_HELP[name]}`, `# TYPE ${name}_total counter`);
+    lines.push(`${name}_total ${counters.get(name) ?? 0}`);
+  }
+  for (const name of Object.keys(HISTOGRAM_HELP) as FunnelHistogram[]) {
+    const bounds = HISTOGRAM_BUCKETS[name];
+    const h = histograms.get(name) ?? { buckets: bounds.map(() => 0), sum: 0, count: 0 };
+    lines.push(`# HELP ${name} ${HISTOGRAM_HELP[name]}`, `# TYPE ${name} histogram`);
+    bounds.forEach((le, i) => lines.push(`${name}_bucket{le="${le}"} ${h.buckets[i]}`));
+    lines.push(
+      `${name}_bucket{le="+Inf"} ${h.count}`,
+      `${name}_sum ${h.sum}`,
+      `${name}_count ${h.count}`
+    );
+  }
+  return lines.join("\n") + "\n";
+}
+
+/** Clears all funnel metrics. Intended for tests. */
+export function resetFunnelMetrics(): void {
+  counters.clear();
+  histograms.clear();
+}
 
 // ── Timer ─────────────────────────────────────────────────────────────────────
 

@@ -13,7 +13,7 @@
  */
 
 import { randomUUID } from "crypto";
-import pool from "@/lib/db";
+import pool, { readPool } from "@/lib/db";
 import type { Gift, GiftStatus } from "@/types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -229,7 +229,7 @@ export async function findGiftById(id: string): Promise<Gift | null> {
  * @returns Array of {@link Gift} domain objects (may be empty).
  */
 export async function findGiftsBySender(senderId: string): Promise<Gift[]> {
-  const { rows } = await pool.query<GiftDbRow>(
+  const { rows } = await readPool.query<GiftDbRow>(
     `SELECT * FROM gifts WHERE sender_id = $1 ORDER BY created_at DESC`,
     [senderId]
   );
@@ -243,7 +243,7 @@ export async function findGiftsBySender(senderId: string): Promise<Gift[]> {
  * @returns Array of {@link Gift} domain objects (may be empty).
  */
 export async function findGiftsByRecipientHash(recipientPhoneHash: string): Promise<Gift[]> {
-  const { rows } = await pool.query<GiftDbRow>(
+  const { rows } = await readPool.query<GiftDbRow>(
     `SELECT * FROM gifts WHERE recipient_phone_hash = $1 ORDER BY created_at DESC`,
     [recipientPhoneHash]
   );

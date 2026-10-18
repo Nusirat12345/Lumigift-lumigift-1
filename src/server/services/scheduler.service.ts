@@ -1,4 +1,5 @@
 import { gifts, updateGiftStatus, isGiftUnlocked } from "./gift.service";
+import { incrementFunnelCounter } from "@/lib/metrics";
 
 /**
  * Unlock scheduler — checks for gifts whose `unlockAt` has passed (inclusive: `now >= unlockAt`)
@@ -53,6 +54,7 @@ export async function processExpiries(): Promise<void> {
       [cutoff]
     );
 
+    let expiredCount = 0;
     for (const gift of rows) {
       try {
         await client.query(
@@ -62,6 +64,7 @@ export async function processExpiries(): Promise<void> {
               AND status = 'unlocked'`,
           [gift.id]
         );
+        expiredCount++;
 
         console.log("[scheduler] expired gift", {
           giftId: gift.id,
@@ -78,6 +81,7 @@ export async function processExpiries(): Promise<void> {
     }
 
     await client.query("COMMIT");
+    incrementFunnelCounter("gifts_expired", expiredCount);
     console.log("[scheduler] processExpiries complete", { expired: rows.length, cutoff });
   } catch (err) {
     await client.query("ROLLBACK");

@@ -66,3 +66,28 @@ The contract uses strict less-than (`now < unlock_time`), so:
 - `timestamp == unlock_time - 1` → **claim fails** with `StillLocked`
 
 This is verified by the boundary tests in `src/lib.rs` (`boundary_tests` module).
+
+---
+
+## Property tests: time-lock arithmetic (issue #357)
+
+The `time_lock_property_tests` module in `src/lib.rs` runs each property for
+**10 000 cases** with `proptest`. The tests are prefixed `fuzz_`, so the
+`contract-fuzz` CI job (`cargo test --locked fuzz_`) runs them on every PR.
+
+| Property                                 | Inputs                                                       | Invariant                                                   |
+| ---------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------- |
+| `fuzz_past_or_near_unlock_time_rejected` | `now` ∈ {0, 3600, near-max, `u64::MAX`, random}              | `unlock_time ≤ now + 3600` → `InvalidUnlockTime`            |
+| `fuzz_future_unlock_time_accepted`       | any `now`, `unlock_time` up to `u64::MAX`                    | `unlock_time > now + 3600` passes the time-lock check       |
+| `fuzz_edge_amounts_respect_minimum`      | 0, 1, -1, `i128::MIN`, `MIN_AMOUNT ± 1`, `i128::MAX`, random | `amount < MIN_AMOUNT` → `InvalidAmount`; otherwise accepted |
+| `fuzz_ttl_covers_lock_period`            | epoch 0 to `u64::MAX`                                        | TTL = buffer once unlocked, else ⌈Δ/5⌉ + buffer, no panic   |
+| `fuzz_ttl_monotonic`                     | epoch 0 to `u64::MAX`                                        | TTL is non-decreasing in `unlock_time`                      |
+
+The contract stores amounts as `i128`, so `i128::MAX` is the upper bound tested.
+Ledger timestamps are UTC seconds, so DST transitions cannot affect the
+comparison; the epoch-0 and `u64::MAX` cases cover the arithmetic boundaries.
+
+**Finding:** `required_ttl_ledgers` rounded up with
+`(secs + LEDGER_CLOSE_SECS - 1) / LEDGER_CLOSE_SECS`, which overflows (and
+aborts, since `overflow-checks = true`) when `unlock_time - now > u64::MAX - 4`.
+It now uses `u64::div_ceil`. No other regressions were found.

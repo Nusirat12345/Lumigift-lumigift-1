@@ -36,7 +36,30 @@ export function logPoolMetrics() {
  */
 export async function closePool() {
   await pool.end();
+  if (readPool !== pool) await readPool.end();
   console.log("[db] Pool closed.");
+}
+
+/**
+ * Read-only pool for GET endpoints (dashboard, gift lookup). Connects to
+ * READ_REPLICA_DATABASE_URL when set; otherwise it is the primary pool, so
+ * local dev and single-instance deployments need no extra configuration.
+ * Never use it for writes or for reads that must see a just-committed write.
+ */
+export const readPool = serverConfig.database.readReplicaUrl
+  ? new Pool({
+      connectionString: serverConfig.database.readReplicaUrl,
+      min: serverConfig.database.poolMin,
+      max: serverConfig.database.poolMax,
+      idleTimeoutMillis: serverConfig.database.idleTimeoutMs,
+      connectionTimeoutMillis: serverConfig.database.connectionTimeoutMs,
+    })
+  : pool;
+
+if (readPool !== pool) {
+  readPool.on("error", (err) => {
+    console.error("[db] Unexpected read replica pool error:", err.message);
+  });
 }
 
 export default pool;
