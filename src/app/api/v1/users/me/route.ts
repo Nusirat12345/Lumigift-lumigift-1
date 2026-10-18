@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { z } from "zod";
 import { authOptions } from "@/lib/auth";
 import { withErrorHandler, withCsrf } from "@/server/middleware";
+import { setPrivateNoStore } from "@/lib/cache";
 import { deleteUserData } from "@/server/services/privacy.service";
 import type { ApiResponse } from "@/types";
 
@@ -43,9 +44,11 @@ export const DELETE = withErrorHandler(
       parsed.data.otp
     );
 
-    return NextResponse.json<ApiResponse<{ deleted: true }>>({
-      success: true,
-      data: { deleted: true },
-    });
+    return setPrivateNoStore(
+      NextResponse.json<ApiResponse<{ deleted: true }>>({
+        success: true,
+        data: { deleted: true },
+      })
+    );
   })
 );

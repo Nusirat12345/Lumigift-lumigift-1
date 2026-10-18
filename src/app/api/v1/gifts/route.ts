@@ -9,6 +9,7 @@ import {
 } from "@/server/services/gift.service";
 import { decodeGiftCursor, encodeGiftCursor } from "@/server/services/gift-cursor";
 import { withErrorHandler, withCsrf } from "@/server/middleware";
+import { setPrivateNoStore } from "@/lib/cache";
 import {
   checkIdempotencyKey,
   storeIdempotencyResponse,
@@ -43,7 +44,10 @@ export const GET = withErrorHandler(async (req: NextRequest) => {
       Math.max(1, parseInt(searchParams.get("limit") ?? String(DEFAULT_LIMIT), 10) || DEFAULT_LIMIT)
     );
     const result = await getGiftsBySenderPage(userId, page, limit);
-    return NextResponse.json<ApiResponse<GiftPageOffset>>({ success: true, data: result });
+    // User-specific data must never be stored in shared caches
+    return setPrivateNoStore(
+      NextResponse.json<ApiResponse<GiftPageOffset>>({ success: true, data: result })
+    );
   }
 
   // Cursor pagination uses a signed, sender-bound snapshot position.
@@ -61,14 +65,17 @@ export const GET = withErrorHandler(async (req: NextRequest) => {
     Math.max(1, parseInt(searchParams.get("pageSize") ?? "10", 10) || 10)
   );
   const page = await getGiftsBySenderPaginated(userId, cursor, pageSize);
-  return NextResponse.json<ApiResponse<GiftPage>>({
-    success: true,
-    data: {
-      gifts: page.gifts,
-      total: page.total,
-      nextCursor: page.nextCursor ? encodeGiftCursor(userId, page.nextCursor) : null,
-    },
-  });
+  // User-specific data must never be stored in shared caches
+  return setPrivateNoStore(
+    NextResponse.json<ApiResponse<GiftPage>>({
+      success: true,
+      data: {
+        gifts: page.gifts,
+        total: page.total,
+        nextCursor: page.nextCursor ? encodeGiftCursor(userId, page.nextCursor) : null,
+      },
+    })
+  );
 });
 
 export const POST = withErrorHandler(
@@ -82,9 +89,9 @@ export const POST = withErrorHandler(
         );
       }
 
-    const validation = await validateBody(req, createGiftSchema);
-    if (!validation.success) return validation.response;
-    const parsed = validation;
+      const validation = await validateBody(req, createGiftSchema);
+      if (!validation.success) return validation.response;
+      const parsed = validation;
 
       const userId = (session.user as { id: string }).id;
       const idempotencyKey = req.headers.get(IDEMPOTENCY_KEY_HEADER);

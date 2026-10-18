@@ -45,6 +45,7 @@ export const registerSchema = z.strictObject({
   phone: e164Phone,
   displayName: z.string().trim().min(2, "Name must be at least 2 characters"),
   invitationToken: z.string().trim().optional(),
+  referralCode: z.string().trim().optional(),
 });
 
 export const reportLoginSchema = z.strictObject({
