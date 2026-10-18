@@ -8,7 +8,7 @@ import {
   getGiftsBySenderPage,
 } from "@/server/services/gift.service";
 import { decodeGiftCursor, encodeGiftCursor } from "@/server/services/gift-cursor";
-import { withErrorHandler, withCsrf } from "@/server/middleware";
+import { withErrorHandler, withCsrf, withBodySizeLimit } from "@/server/middleware";
 import {
   checkIdempotencyKey,
   storeIdempotencyResponse,
@@ -82,9 +82,9 @@ export const POST = withErrorHandler(
         );
       }
 
-    const validation = await validateBody(req, createGiftSchema);
-    if (!validation.success) return validation.response;
-    const parsed = validation;
+      const validation = await validateBody(req, createGiftSchema);
+      if (!validation.success) return validation.response;
+      const parsed = validation;
 
       const userId = (session.user as { id: string }).id;
       const idempotencyKey = req.headers.get(IDEMPOTENCY_KEY_HEADER);

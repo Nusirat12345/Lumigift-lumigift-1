@@ -8,6 +8,27 @@ import type { ApiResponse } from "@/types";
 const MAX_BYTES = 5 * 1024 * 1024; // 5 MB
 const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 const UPLOAD_FOLDER = "gift-media";
+// Incoming transformation: Cloudinary re-encodes the stored original, which
+// strips EXIF/GPS metadata from user photos.
+const UPLOAD_TRANSFORMATION = "q_auto";
+
+/** Detects the real image type from the file's leading bytes (magic numbers). */
+function sniffImageType(bytes: Uint8Array): string | null {
+  const ascii = (start: number, end: number) => String.fromCharCode(...bytes.subarray(start, end));
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (
+    bytes[0] === 0x89 &&
+    ascii(1, 4) === "PNG" &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  )
+    return "image/png";
+  if (ascii(0, 6) === "GIF87a" || ascii(0, 6) === "GIF89a") return "image/gif";
+  if (ascii(0, 4) === "RIFF" && ascii(8, 12) === "WEBP") return "image/webp";
+  return null;
+}
 
 function sign(params: Record<string, string | number>): string {
   const secret = process.env.CLOUDINARY_API_SECRET;
@@ -59,7 +80,7 @@ export const POST = withErrorHandler(
           success: false,
           error: `Invalid file type "${file.type}". Allowed: jpeg, png, webp, gif`,
         },
-        { status: 400 }
+        { status: 422 }
       );
     }
 
@@ -67,19 +88,29 @@ export const POST = withErrorHandler(
     if (file.size > MAX_BYTES) {
       return NextResponse.json<ApiResponse<never>>(
         { success: false, error: "File exceeds the 5 MB size limit" },
-        { status: 400 }
+        { status: 422 }
+      );
+    }
+
+    // Verify the actual content via magic bytes — the Content-Type is client-controlled
+    const header = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+    if (sniffImageType(header) !== file.type) {
+      return NextResponse.json<ApiResponse<never>>(
+        { success: false, error: "File content does not match an allowed image type" },
+        { status: 422 }
       );
     }
 
     // Upload to Cloudinary server-side using a signed request
     const timestamp = Math.floor(Date.now() / 1000);
-    const params = { timestamp, folder: UPLOAD_FOLDER };
+    const params = { timestamp, folder: UPLOAD_FOLDER, transformation: UPLOAD_TRANSFORMATION };
     const signature = sign(params);
 
     const cloudForm = new FormData();
     cloudForm.append("file", file);
     cloudForm.append("timestamp", String(timestamp));
     cloudForm.append("folder", UPLOAD_FOLDER);
+    cloudForm.append("transformation", UPLOAD_TRANSFORMATION);
     cloudForm.append("api_key", process.env.CLOUDINARY_API_KEY ?? "");
     cloudForm.append("signature", signature);
 
