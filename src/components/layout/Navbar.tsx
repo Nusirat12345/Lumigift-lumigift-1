@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
+import { NotificationBell } from "@/components/ui/NotificationBell";
 import styles from "./Navbar.module.css";
 
 const NAV_LINKS = [
@@ -131,6 +132,11 @@ export function Navbar() {
               role="menuitem"
               onClick={handleLinkClick}
             >
+          <li>
+            <NotificationBell />
+          </li>
+          <li>
+            <Link href="/auth/login" className="btn btn--primary btn--sm">
               Sign In
             </Link>
           </li>
