@@ -59,3 +59,7 @@ contracts/escrow/test_snapshots/
 __snapshots__/
 **/__snapshots__/
 
+
+# Jest results
+test-results/
+.coverage/
