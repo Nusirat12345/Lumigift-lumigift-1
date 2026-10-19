@@ -52,3 +52,10 @@ infra/terraform/.terraform.lock.hcl
 # Load test result files (uploaded as CI artifacts instead)
 load-tests/results/
 contracts/escrow/test_snapshots/
+
+# additional ignores
+*.snap
+**/*.snap
+__snapshots__/
+**/__snapshots__/
+
