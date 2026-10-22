@@ -5,83 +5,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { NotificationBell } from "@/components/ui/NotificationBell";
+import { useTranslation, SUPPORTED_LOCALES } from "@/i18n";
+import type { Locale } from "@/i18n/types";
 import styles from "./Navbar.module.css";
 
-const NAV_LINKS = [
-  { href: "/send", label: "Send a Gift" },
-  { href: "/dashboard", label: "Dashboard" },
+const NAV_HREFS = [
+  { href: "/send", labelKey: "nav.send_gift" as const },
+  { href: "/dashboard", labelKey: "nav.dashboard" as const },
 ];
 
 const MOBILE_BREAKPOINT = 768;
 
 export function Navbar() {
   const pathname = usePathname();
-  const [menuOpen, setMenuOpen] = useState(false);
-  const navRef = useRef<HTMLNavElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const focusTrapEndRef = useRef<HTMLSpanElement>(null);
-
-  // Close menu on Escape.
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (menuOpen && e.key === "Escape") {
-        setMenuOpen(false);
-        buttonRef.current?.focus();
-      }
-    },
-    [menuOpen]
-  );
-
-  // Close menu on resize above breakpoint.
-  useEffect(() => {
-    const handleResize = () => {
-      if (window.innerWidth >= MOBILE_BREAKPOINT && menuOpen) {
-        setMenuOpen(false);
-      }
-    };
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, [menuOpen]);
-
-  // Focus management: trap focus inside the menu while open.
-  useEffect(() => {
-    if (!menuOpen || !navRef.current) return;
-
-    const nav = navRef.current;
-    const focusable = nav.querySelectorAll<HTMLElement>(
-      'a[href], button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-    );
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-
-    first?.focus();
-
-    const handleTab = (e: KeyboardEvent) => {
-      if (e.key !== "Tab") return;
-      if (e.shiftKey) {
-        if (document.activeElement === first) {
-          e.preventDefault();
-          last?.focus();
-        }
-      } else {
-        if (document.activeElement === last || document.activeElement === focusTrapEndRef.current) {
-          e.preventDefault();
-          first?.focus();
-        }
-      }
-    };
-
-    nav.addEventListener("keydown", handleTab);
-    return () => nav.removeEventListener("keydown", handleTab);
-  }, [menuOpen]);
-
-  // Close menu when a link is clicked.
-  const handleLinkClick = useCallback(() => {
-    setMenuOpen(false);
-  }, []);
-
-  const isActive = (href: string) =>
-    pathname === href || pathname.startsWith(href + "/");
+  const { t, locale, setLocale } = useTranslation();
 
   return (
     <header className={styles.header}>
@@ -101,13 +38,9 @@ export function Navbar() {
           <span className={styles.logoText}>Lumigift</span>
         </Link>
 
-        <ul
-          id="lumigift-mobile-menu"
-          className={`${styles.links} ${menuOpen ? styles.linksOpen : ""}`}
-          role="menu"
-        >
-          {NAV_LINKS.map(({ href, label }) => {
-            const active = isActive(href);
+        <ul className={styles.links} role="list">
+          {NAV_HREFS.map(({ href, labelKey }) => {
+            const isActive = pathname === href || pathname.startsWith(href + "/");
             return (
               <li key={href} role="none">
                 <Link
@@ -117,13 +50,34 @@ export function Navbar() {
                   aria-current={active ? "page" : undefined}
                   onClick={handleLinkClick}
                 >
-                  {label}
+                  {t(labelKey)}
                 </Link>
               </li>
             );
           })}
-          <li role="none">
-            <ThemeToggle role="menuitem" />
+
+          {/* ── Language selector ──────────────────────────────────────── */}
+          <li>
+            <label htmlFor="lang-select" className="sr-only">
+              {t("nav.language_selector")}
+            </label>
+            <select
+              id="lang-select"
+              className={styles.langSelect}
+              value={locale}
+              onChange={(e) => setLocale(e.target.value as Locale)}
+              aria-label={t("nav.select_language")}
+            >
+              {SUPPORTED_LOCALES.map(({ code, nativeLabel }) => (
+                <option key={code} value={code}>
+                  {nativeLabel}
+                </option>
+              ))}
+            </select>
+          </li>
+
+          <li>
+            <ThemeToggle />
           </li>
           <li role="none">
             <Link
@@ -137,7 +91,7 @@ export function Navbar() {
           </li>
           <li>
             <Link href="/auth/login" className="btn btn--primary btn--sm">
-              Sign In
+              {t("nav.sign_in")}
             </Link>
           </li>
           <span ref={focusTrapEndRef} />

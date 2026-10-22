@@ -32,11 +32,10 @@ export function getAuditLog(): AuditEntry[] {
 export interface AdminGiftQuery {
   search?: string; // matches recipientName (case-insensitive)
   status?: GiftStatus;
-  from?: string; // ISO date filter (inclusive) on createdAt
-  to?: string; // ISO date filter (inclusive) on createdAt
-  cursor?: string; // gift id to paginate after (next page)
-  page?: number; // 1-based page number
-  pageSize?: number; // default 25, max 100
+  cursor?: string;
+  limit?: number;
+  /** When true, includes soft-deleted gifts; when false (default) excludes them. */
+  includeDeleted?: boolean;
 }
 
 export interface AdminGiftPage {
@@ -68,6 +67,11 @@ export function adminListGifts(query: AdminGiftQuery): AdminGiftPage {
 
   // Apply filters first (indexed: status + createdAt range).
   let all = [...gifts.values()];
+
+  // By default exclude soft-deleted gifts; admin can opt in with includeDeleted
+  if (!query.includeDeleted) {
+    all = all.filter((g) => !g.deletedAt);
+  }
 
   if (query.status) {
     all = all.filter((g) => g.status === query.status);
@@ -123,5 +127,6 @@ export function adminListGifts(query: AdminGiftQuery): AdminGiftPage {
 }
 
 export function adminGetGift(id: string): Gift | null {
+  // Admin can view any gift, including soft-deleted ones
   return gifts.get(id) ?? null;
 }
