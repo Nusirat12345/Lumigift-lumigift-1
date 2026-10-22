@@ -17,10 +17,10 @@
  *
  * Issue #151 — Multi-currency pricing display.
  */
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { withAuth, withErrorHandler, AppError, ERROR_CODES } from "@/server/middleware";
 import { getExchangeRate } from "@/server/services/exchange-rate.service";
-import type { ApiResponse } from "@/types";
+import { cachedJsonResponse } from "@/lib/cache";
 
 /** Quote response shape. */
 export interface ExchangeRateQuote {
@@ -49,23 +49,28 @@ export const GET = withErrorHandler(
       throw new AppError(ERROR_CODES.VALIDATION_ERROR, "amountNgn must be a positive number", 400);
     }
 
-    const rateResult = await getExchangeRate();
+    // Redis server-side cache keyed by amount — avoids redundant rate fetches + DB calls
+    return cachedJsonResponse<ExchangeRateQuote>(
+      `rate:quote:${amountNgn}`,
+      QUOTE_TTL_SEC,
+      "public, max-age=60, stale-while-revalidate=300",
+      async () => {
+        const rateResult = await getExchangeRate();
 
-    const fetchedAt = new Date();
-    const expiresAt = new Date(fetchedAt.getTime() + QUOTE_TTL_SEC * 1000);
+        const fetchedAt = new Date();
+        const expiresAt = new Date(fetchedAt.getTime() + QUOTE_TTL_SEC * 1000);
 
-    // Convert NGN → USDC and round to 4 decimal places
-    const amountUsdc = parseFloat((amountNgn / rateResult.ngnPerUsdc).toFixed(4));
+        const amountUsdc = parseFloat((amountNgn / rateResult.ngnPerUsdc).toFixed(4));
 
-    const quote: ExchangeRateQuote = {
-      amountNgn,
-      amountUsdc,
-      ngnPerUsdc: rateResult.ngnPerUsdc,
-      fetchedAt: fetchedAt.toISOString(),
-      expiresAt: expiresAt.toISOString(),
-      provider: rateResult.source,
-    };
-
-    return NextResponse.json<ApiResponse<ExchangeRateQuote>>({ success: true, data: quote });
+        return {
+          amountNgn,
+          amountUsdc,
+          ngnPerUsdc: rateResult.ngnPerUsdc,
+          fetchedAt: fetchedAt.toISOString(),
+          expiresAt: expiresAt.toISOString(),
+          provider: rateResult.source,
+        };
+      }
+    );
   })
 );
