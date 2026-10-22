@@ -24,13 +24,13 @@ import { serverConfig } from "@/server/config";
  * strings, stack traces, or internal details are ever returned.
  */
 export async function GET() {
-  const [db, redis, horizon] = await Promise.all([
+  const [postgres, redis, horizon] = await Promise.all([
     checkDb(),
     checkRedis(),
     checkHorizon(serverConfig.stellar.horizonUrl),
   ]);
 
-  const checks = { db, redis, horizon };
+  const checks = { postgres, redis, horizon };
   const degraded = Object.values(checks).some((s) => s === "error");
   const status = degraded ? "degraded" : "ok";
 
@@ -38,14 +38,7 @@ export async function GET() {
   const poolMetrics = getPoolMetrics();
 
   return NextResponse.json(
-    {
-      status,
-      timestamp: new Date().toISOString(),
-      checks,
-      metrics: {
-        db: poolMetrics,
-      },
-    },
+    { status, timestamp: new Date().toISOString(), postgres, redis, checks },
     { status: degraded ? 503 : 200 }
   );
 }
@@ -59,13 +52,21 @@ async function checkDb(): Promise<"ok" | "error"> {
   }
 }
 
+/** Redis probe timeout — keeps the readiness probe from hanging. */
+const REDIS_TIMEOUT_MS = 500;
+
 async function checkRedis(): Promise<"ok" | "error"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const client = await getRedisClient();
-    await client.ping();
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Redis health check timed out")), REDIS_TIMEOUT_MS);
+    });
+    await Promise.race([getRedisClient().then((client) => client.ping()), timeout]);
     return "ok";
   } catch {
     return "error";
+  } finally {
+    clearTimeout(timer);
   }
 }
 

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyPayment } from "@/lib/paystack";
 import { updateGiftStatus } from "@/server/services/gift.service";
 import { validateSlippage } from "@/server/services/exchange-rate.service";
+import { creditReferralOnFirstPayment } from "@/server/services/referral.service";
 import { withErrorHandler } from "@/server/middleware";
 
 /** Paystack redirects here after payment. */
@@ -28,6 +29,24 @@ export const GET = withErrorHandler(async (req: NextRequest) => {
     }
 
     await updateGiftStatus(giftId, "locked");
+
+    // ── Referral credit (Issue #328) ──────────────────────────────────────────
+    // After the first gift payment is confirmed, credit both the referrer
+    // and the referee ₦500 if a referral relationship exists.
+    try {
+      const pool = (await import("@/lib/db")).default;
+      const { rows } = await pool.query<{ sender_id: string }>(
+        "SELECT sender_id FROM gifts WHERE id = $1 LIMIT 1",
+        [giftId]
+      );
+      if (rows.length > 0) {
+        await creditReferralOnFirstPayment(rows[0].sender_id);
+      }
+    } catch (err) {
+      // Don't block the payment flow on referral credit failure
+      console.error("[payments/callback] Referral credit failed:", err);
+    }
+
     return NextResponse.redirect(new URL(`/gift/${giftId}/success`, req.url));
   }
 
