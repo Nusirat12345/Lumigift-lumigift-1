@@ -39,6 +39,7 @@ export const serverConfig = {
   },
   database: {
     url: env.DATABASE_URL,
+    readReplicaUrl: env.READ_REPLICA_DATABASE_URL,
     poolMin: env.DB_POOL_MIN,
     poolMax: env.DB_POOL_MAX,
     idleTimeoutMs: env.DB_IDLE_TIMEOUT_MS,
@@ -48,6 +49,9 @@ export const serverConfig = {
     minAmountNgn: env.GIFT_MIN_AMOUNT_NGN,
     maxAmountNgn: env.GIFT_MAX_AMOUNT_NGN,
     dailyLimitNgn: env.GIFT_DAILY_LIMIT_NGN,
+  },
+  giftExpiry: {
+    gracePeriodDays: env.GIFT_EXPIRY_GRACE_PERIOD_DAYS,
   },
   cloudinary: {
     cloudName: env.CLOUDINARY_CLOUD_NAME,

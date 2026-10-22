@@ -1,15 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { createGiftSchema } from "@/types/schemas";
+import { createGiftSchema, giftFilterSchema } from "@/types/schemas";
 import {
   createGift,
   getGiftsBySenderPaginated,
   getGiftsBySenderPage,
 } from "@/server/services/gift.service";
 import { decodeGiftCursor, encodeGiftCursor } from "@/server/services/gift-cursor";
-import { withErrorHandler, withCsrf } from "@/server/middleware";
-import { setPrivateNoStore } from "@/lib/cache";
+import { withErrorHandler, withCsrf, withBodySizeLimit } from "@/server/middleware";
 import {
   checkIdempotencyKey,
   storeIdempotencyResponse,
@@ -33,6 +32,20 @@ export const GET = withErrorHandler(async (req: NextRequest) => {
   const userId = (session.user as { id: string }).id;
   const { searchParams } = req.nextUrl;
 
+  const filterResult = giftFilterSchema.safeParse({
+    status: searchParams.get("status") ?? undefined,
+    from: searchParams.get("from") ?? undefined,
+    to: searchParams.get("to") ?? undefined,
+    q: searchParams.get("q") ?? undefined,
+  });
+  if (!filterResult.success) {
+    return NextResponse.json<ApiResponse<never>>(
+      { success: false, error: "Invalid gift filters", code: "VALIDATION_ERROR" },
+      { status: 400 }
+    );
+  }
+  const filters = filterResult.data;
+
   // Offset-based pagination (page + limit)
   if (searchParams.has("page") || searchParams.has("limit")) {
     const page = Math.max(
@@ -43,11 +56,8 @@ export const GET = withErrorHandler(async (req: NextRequest) => {
       MAX_LIMIT,
       Math.max(1, parseInt(searchParams.get("limit") ?? String(DEFAULT_LIMIT), 10) || DEFAULT_LIMIT)
     );
-    const result = await getGiftsBySenderPage(userId, page, limit);
-    // User-specific data must never be stored in shared caches
-    return setPrivateNoStore(
-      NextResponse.json<ApiResponse<GiftPageOffset>>({ success: true, data: result })
-    );
+    const result = await getGiftsBySenderPage(userId, page, limit, filters);
+    return NextResponse.json<ApiResponse<GiftPageOffset>>({ success: true, data: result });
   }
 
   // Cursor pagination uses a signed, sender-bound snapshot position.
@@ -64,18 +74,15 @@ export const GET = withErrorHandler(async (req: NextRequest) => {
     MAX_LIMIT,
     Math.max(1, parseInt(searchParams.get("pageSize") ?? "10", 10) || 10)
   );
-  const page = await getGiftsBySenderPaginated(userId, cursor, pageSize);
-  // User-specific data must never be stored in shared caches
-  return setPrivateNoStore(
-    NextResponse.json<ApiResponse<GiftPage>>({
-      success: true,
-      data: {
-        gifts: page.gifts,
-        total: page.total,
-        nextCursor: page.nextCursor ? encodeGiftCursor(userId, page.nextCursor) : null,
-      },
-    })
-  );
+  const page = await getGiftsBySenderPaginated(userId, cursor, pageSize, filters);
+  return NextResponse.json<ApiResponse<GiftPage>>({
+    success: true,
+    data: {
+      gifts: page.gifts,
+      total: page.total,
+      nextCursor: page.nextCursor ? encodeGiftCursor(userId, page.nextCursor) : null,
+    },
+  });
 });
 
 export const POST = withErrorHandler(
@@ -98,6 +105,17 @@ export const POST = withErrorHandler(
 
       // ── Idempotency check ─────────────────────────────────────────────────────
       const idempotencyResult = await checkIdempotencyKey(idempotencyKey, userId, parsed.data);
+
+      if (idempotencyResult.type === "missing") {
+        return NextResponse.json<ApiResponse<never>>(
+          {
+            success: false,
+            error: "Idempotency-Key header is required",
+            code: "VALIDATION_ERROR",
+          },
+          { status: 422 }
+        );
+      }
 
       if (idempotencyResult.type === "invalid") {
         return NextResponse.json<ApiResponse<never>>(
@@ -138,15 +156,12 @@ export const POST = withErrorHandler(
         data: { gift, paymentUrl },
       };
 
-      // Store the response only when an idempotency key was provided
-      if (idempotencyResult.type === "new") {
-        await storeIdempotencyResponse(
-          idempotencyResult.redisKey,
-          idempotencyResult.payloadHash,
-          201,
-          responseBody
-        );
-      }
+      await storeIdempotencyResponse(
+        idempotencyResult.redisKey,
+        idempotencyResult.payloadHash,
+        201,
+        responseBody
+      );
 
       return NextResponse.json(responseBody, { status: 201 });
     })

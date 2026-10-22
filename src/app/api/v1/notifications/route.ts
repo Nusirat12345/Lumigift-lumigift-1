@@ -8,7 +8,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { z } from "zod";
-import pool from "@/lib/db";
+import pool, { readPool } from "@/lib/db";
 import { authOptions } from "@/lib/auth";
 import { withErrorHandler } from "@/server/middleware";
 import type { ApiResponse } from "@/types";
@@ -64,7 +64,7 @@ export const GET = withErrorHandler(async (req: NextRequest) => {
   const offset = Math.max(0, parseInt(searchParams.get("offset") ?? "0", 10) || 0);
 
   const [notificationsResult, unreadResult, totalResult] = await Promise.all([
-    pool.query<Notification>(
+    readPool.query<Notification>(
       `SELECT id, user_id, type, message, read_at, created_at, metadata
        FROM notifications
        WHERE user_id = $1
@@ -72,11 +72,11 @@ export const GET = withErrorHandler(async (req: NextRequest) => {
        LIMIT $2 OFFSET $3`,
       [userId, limit, offset]
     ),
-    pool.query<{ count: string }>(
+    readPool.query<{ count: string }>(
       `SELECT COUNT(*) AS count FROM notifications WHERE user_id = $1 AND read_at IS NULL`,
       [userId]
     ),
-    pool.query<{ count: string }>(
+    readPool.query<{ count: string }>(
       `SELECT COUNT(*) AS count FROM notifications WHERE user_id = $1`,
       [userId]
     ),

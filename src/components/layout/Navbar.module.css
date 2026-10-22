@@ -2,7 +2,7 @@
   position: sticky;
   top: 0;
   z-index: 50;
-  background-color: rgba(13, 13, 20, 0.85);
+  background-color: var(--color-bg-nav);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--color-border-subtle);
 }
@@ -45,6 +45,78 @@
   gap: var(--space-6);
 }
 
+.linksOpen {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+@media (max-width: 767px) {
+  .links {
+    position: fixed;
+    inset: 0 0 0 auto;
+    top: 64px;
+    width: min(280px, 100vw);
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    padding: var(--space-6);
+    background: var(--color-surface-page);
+    border-left: 1px solid var(--color-border-subtle);
+    box-shadow: var(--shadow-lg);
+    z-index: 60;
+    transform: translateX(100%);
+    transition: transform var(--transition-base) ease-out;
+  }
+
+  .linksOpen {
+    transform: translateX(0);
+  }
+
+  .links .link {
+    display: block;
+    padding: var(--space-3) 0;
+    font-size: var(--text-base);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .navControls {
+    display: block;
+  }
+
+  .menuButton {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    color: var(--color-text-primary);
+  }
+
+  .hamburgerLine {
+    display: block;
+    width: 20px;
+    height: 2px;
+    background: currentColor;
+    border-radius: var(--radius-full);
+    transform-origin: center;
+  }
+
+  .hamburgerLine + .hamburgerLine {
+    margin-top: 4px;
+  }
+}
+
+@media (min-width: 768px) {
+  .navControls {
+    display: none;
+  }
+}
+
 .link {
   font-size: var(--text-sm);
   font-weight: var(--font-medium);
@@ -75,6 +147,39 @@
 
 @media (max-width: 640px) {
   .links .link {
+    display: none;
+  }
+}
+
+/* ── Language selector ─────────────────────────────────────────────────────── */
+
+.langSelect {
+  appearance: none;
+  background-color: transparent;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.langSelect:hover {
+  color: var(--color-text-primary);
+  border-color: var(--color-border);
+}
+
+.langSelect:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .langSelect {
     display: none;
   }
 }
