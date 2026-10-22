@@ -4,6 +4,7 @@ import { normalizePhone } from "@/lib/phone";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { withErrorHandler, rateLimit } from "@/server/middleware";
+import { setPrivateNoStore } from "@/lib/cache";
 import type { ApiResponse } from "@/types";
 
 // Per-user: 20 lookups per hour. The lookup is only needed while composing a
@@ -57,8 +58,11 @@ export const GET = withErrorHandler(async (req: NextRequest) => {
 
   const { rows } = await pool.query("SELECT 1 FROM users WHERE phone = $1 LIMIT 1", [phone]);
 
-  return NextResponse.json<ApiResponse<{ exists: boolean }>>({
-    success: true,
-    data: { exists: rows.length > 0 },
-  });
+  // User-specific lookup result must never be cached in shared caches
+  return setPrivateNoStore(
+    NextResponse.json<ApiResponse<{ exists: boolean }>>({
+      success: true,
+      data: { exists: rows.length > 0 },
+    })
+  );
 });

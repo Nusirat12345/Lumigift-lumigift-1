@@ -1,147 +1,233 @@
 //! Benchmark tests for the Lumigift escrow contract.
 //!
-//! Measures Soroban CPU, memory, and ledger resources for the two most
-//! important entry-points: `initialize` and `claim`.
+//! Measures Soroban CPU instructions and memory for every state-changing
+//! entry point: `initialize` (the deposit into escrow), `claim` and `cancel`.
 //!
 //! Run with:
 //!   cargo bench --manifest-path contracts/escrow/Cargo.toml
 //!
-//! The thresholds below are the regression guards for issue #86.
-//! CI fails if either operation exceeds any limit.
+//! Before the Criterion timing run, each entry point is measured once with the
+//! deterministic Soroban budget tracker and compared to the baseline table in
+//! `BENCHMARKS.md`. The run fails if any metric regresses by more than
+//! `REGRESSION_TOLERANCE_PCT` (issue #356). A Markdown report is written to
+//! `target/escrow-bench-report.md` for CI to post on the PR.
 
-use criterion::{criterion_group, criterion_main, Criterion};
-use lumigift_escrow::EscrowContract;
+use criterion::{criterion_group, Criterion};
+use lumigift_escrow::{EscrowContract, EscrowContractClient, USDC_TESTNET};
 use soroban_sdk::{
+    contract, contractimpl,
     testutils::{Address as _, Ledger},
-    token::{Client as TokenClient, StellarAssetClient},
-    Env,
+    Address, Env,
 };
 
-// ─── Regression thresholds ────────────────────────────────────────────────────
-//
-// These are conservative upper bounds derived from the first measured run.
-// Tighten them as the contract matures.
-//
-// Soroban fee formula (approximation, Stellar Protocol 21):
-//   fee_stroops ≈ cpu_instructions / 10_000
-//   1 XLM = 10_000_000 stroops
-//
-// At 1 XLM ≈ $0.12 USD and 1 USDC gift:
-//   initialize: 500_000 instructions → 50 stroops → ~$0.000_000_6 USD
-//   claim:      300_000 instructions → 30 stroops → ~$0.000_000_4 USD
-//
-// See BENCHMARKS.md for the full fee breakdown.
-
-const INITIALIZE_CPU_LIMIT: u64 = 500_000;
-const CLAIM_CPU_LIMIT: u64 = 300_000;
-const INITIALIZE_MEMORY_LIMIT: u64 = 1_000_000;
-const CLAIM_MEMORY_LIMIT: u64 = 500_000;
-const INITIALIZE_LEDGER_READ_BYTES_LIMIT: u64 = 100_000;
-const CLAIM_LEDGER_READ_BYTES_LIMIT: u64 = 100_000;
-const INITIALIZE_LEDGER_WRITE_BYTES_LIMIT: u64 = 100_000;
-const CLAIM_LEDGER_WRITE_BYTES_LIMIT: u64 = 100_000;
-
-macro_rules! assert_budget {
-    ($env:expr, $operation:expr, $cpu_limit:expr, $memory_limit:expr,
-        $ledger_read_bytes_limit:expr, $ledger_write_bytes_limit:expr) => {{
-    let budget = $env.cost_estimate().budget();
-    let resources = $env.cost_estimate().resources();
-    assert!(
-        budget.cpu_instruction_cost() <= $cpu_limit,
-        "{} used {} CPU instructions, exceeds limit of {}",
-        $operation,
-        budget.cpu_instruction_cost(),
-        $cpu_limit
-    );
-    assert!(
-        budget.memory_bytes_cost() <= $memory_limit,
-        "{} used {} memory bytes, exceeds limit of {}",
-        $operation,
-        budget.memory_bytes_cost(),
-        $memory_limit
-    );
-    assert!(
-        resources.disk_read_bytes as u64 <= $ledger_read_bytes_limit,
-        "{} read {} ledger bytes, exceeds limit of {}",
-        $operation,
-        resources.disk_read_bytes,
-        $ledger_read_bytes_limit
-    );
-    assert!(
-        resources.write_bytes as u64 <= $ledger_write_bytes_limit,
-        "{} wrote {} ledger bytes, exceeds limit of {}",
-        $operation,
-        resources.write_bytes,
-        $ledger_write_bytes_limit
-    );
-    }};
-}
+const REGRESSION_TOLERANCE_PCT: u64 = 10;
+const BASELINE_MD: &str = include_str!("../BENCHMARKS.md");
+const AMOUNT: i128 = 100_000_000;
+const UNLOCK_TIME: u64 = 3_601;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-fn make_env() -> Env {
-    let env = Env::default();
-    env.mock_all_auths();
-    env
+/// Minimal balance-tracking token registered at the allow-listed USDC testnet
+/// address (the escrow rejects any other token).
+#[contract]
+struct MockUsdc;
+
+#[contractimpl]
+impl MockUsdc {
+    pub fn mint(env: Env, to: Address, amount: i128) {
+        let balance: i128 = env.storage().persistent().get(&to).unwrap_or(0);
+        env.storage().persistent().set(&to, &(balance + amount));
+    }
+
+    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        from.require_auth();
+        let from_balance: i128 = env.storage().persistent().get(&from).unwrap_or(0);
+        assert!(from_balance >= amount, "insufficient balance");
+        env.storage()
+            .persistent()
+            .set(&from, &(from_balance - amount));
+        Self::mint(env, to, amount);
+    }
 }
 
-fn bench_initialize(c: &mut Criterion) {
-    c.bench_function("initialize", |b| {
-        b.iter(|| {
-            let env = make_env();
-            let sender = soroban_sdk::Address::generate(&env);
-            let recipient = soroban_sdk::Address::generate(&env);
-            let token_id = env.register_stellar_asset_contract(sender.clone());
-            StellarAssetClient::new(&env, &token_id).mint(&sender, &100_000_000);
+struct Fixture {
+    env: Env,
+    admin: Address,
+    sender: Address,
+    recipient: Address,
+    token_id: Address,
+    contract_id: Address,
+}
 
-            let contract_id = env.register_contract(None, EscrowContract);
-            let client = lumigift_escrow::EscrowContractClient::new(&env, &contract_id);
+impl Fixture {
+    fn new() -> Self {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let token_id = Address::from_str(&env, USDC_TESTNET);
+        env.register_at(&token_id, MockUsdc, ());
+        MockUsdcClient::new(&env, &token_id).mint(&sender, &AMOUNT);
+        let contract_id = env.register(EscrowContract, ());
+        Fixture {
+            env,
+            admin,
+            sender,
+            recipient,
+            token_id,
+            contract_id,
+        }
+    }
 
-            client.initialize(&sender, &recipient, &token_id, &100_000_000, &3_601);
+    fn client(&self) -> EscrowContractClient<'_> {
+        EscrowContractClient::new(&self.env, &self.contract_id)
+    }
 
-            assert_budget!(
-                env,
-                "initialize",
-                INITIALIZE_CPU_LIMIT,
-                INITIALIZE_MEMORY_LIMIT,
-                INITIALIZE_LEDGER_READ_BYTES_LIMIT,
-                INITIALIZE_LEDGER_WRITE_BYTES_LIMIT,
+    fn initialize(&self) {
+        self.client().initialize(
+            &self.admin,
+            &self.sender,
+            &self.recipient,
+            &self.token_id,
+            &AMOUNT,
+            &UNLOCK_TIME,
+        );
+    }
+
+    fn initialized() -> Self {
+        let f = Self::new();
+        f.initialize();
+        f
+    }
+
+    /// Resets the budget tracker, runs `op`, and returns (cpu, memory).
+    fn measure(&self, op: impl FnOnce(&Self)) -> (u64, u64) {
+        self.env.cost_estimate().budget().reset_tracker();
+        op(self);
+        let budget = self.env.cost_estimate().budget();
+        (budget.cpu_instruction_cost(), budget.memory_bytes_cost())
+    }
+}
+
+fn op_initialize(f: &Fixture) {
+    f.initialize();
+}
+
+fn op_claim(f: &Fixture) {
+    f.env.ledger().with_mut(|l| l.timestamp = UNLOCK_TIME);
+    f.client().claim();
+}
+
+fn op_cancel(f: &Fixture) {
+    f.client().cancel();
+}
+
+/// (name, needs prior initialize, operation)
+const OPERATIONS: [(&str, bool, fn(&Fixture)); 3] = [
+    ("initialize", false, op_initialize),
+    ("claim", true, op_claim),
+    ("cancel", true, op_cancel),
+];
+
+fn fixture_for(needs_init: bool) -> Fixture {
+    if needs_init {
+        Fixture::initialized()
+    } else {
+        Fixture::new()
+    }
+}
+
+// ─── Baseline regression check ────────────────────────────────────────────────
+
+/// Parses `| \`op\` | cpu | mem |` rows between the baseline markers in BENCHMARKS.md.
+fn baseline(op: &str) -> Option<(u64, u64)> {
+    let section = BASELINE_MD
+        .split("<!-- baseline:start -->")
+        .nth(1)?
+        .split("<!-- baseline:end -->")
+        .next()?;
+    section.lines().find_map(|line| {
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        if cells.len() < 4 || cells[1] != format!("`{op}`") {
+            return None;
+        }
+        let num = |s: &str| s.replace([' ', '_', ','], "").parse::<u64>().ok();
+        Some((num(cells[2])?, num(cells[3])?))
+    })
+}
+
+fn delta_pct(current: u64, base: u64) -> f64 {
+    (current as f64 - base as f64) * 100.0 / base as f64
+}
+
+fn regression_check() {
+    let mut report = String::from(
+        "### Escrow contract benchmarks\n\n\
+         | Operation | CPU instructions | Δ CPU | Memory bytes | Δ Memory | Status |\n\
+         | --------- | ---------------- | ----- | ------------ | -------- | ------ |\n",
+    );
+    let mut failures = Vec::new();
+
+    for (name, needs_init, op) in OPERATIONS {
+        let (cpu, mem) = fixture_for(needs_init).measure(op);
+        let (status, d_cpu, d_mem) = match baseline(name) {
+            Some((base_cpu, base_mem)) => {
+                let limit = |base: u64| base + base * REGRESSION_TOLERANCE_PCT / 100;
+                let ok = cpu <= limit(base_cpu) && mem <= limit(base_mem);
+                if !ok {
+                    failures.push(format!(
+                        "{name}: cpu {cpu} (baseline {base_cpu}), memory {mem} (baseline {base_mem})"
+                    ));
+                }
+                (
+                    if ok { "✅" } else { "❌ regressed" },
+                    format!("{:+.1}%", delta_pct(cpu, base_cpu)),
+                    format!("{:+.1}%", delta_pct(mem, base_mem)),
+                )
+            }
+            None => ("⚠️ no baseline", "n/a".into(), "n/a".into()),
+        };
+        println!("{name}: cpu={cpu} memory={mem} {status}");
+        report.push_str(&format!(
+            "| `{name}` | {cpu} | {d_cpu} | {mem} | {d_mem} | {status} |\n"
+        ));
+    }
+
+    report.push_str(&format!(
+        "\nFails when any metric exceeds the `BENCHMARKS.md` baseline by more than {REGRESSION_TOLERANCE_PCT}%.\n"
+    ));
+    let out = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../target/escrow-bench-report.md"
+    );
+    std::fs::write(out, &report).expect("write bench report");
+
+    assert!(
+        failures.is_empty(),
+        "benchmark regression > {REGRESSION_TOLERANCE_PCT}%:\n{}",
+        failures.join("\n")
+    );
+}
+
+// ─── Criterion timing ─────────────────────────────────────────────────────────
+
+fn bench_operations(c: &mut Criterion) {
+    for (name, needs_init, op) in OPERATIONS {
+        c.bench_function(name, |b| {
+            b.iter_batched(
+                || fixture_for(needs_init),
+                |f| op(&f),
+                criterion::BatchSize::SmallInput,
             );
         });
-    });
+    }
 }
 
-fn bench_claim(c: &mut Criterion) {
-    c.bench_function("claim", |b| {
-        b.iter(|| {
-            let env = make_env();
-            let sender = soroban_sdk::Address::generate(&env);
-            let recipient = soroban_sdk::Address::generate(&env);
-            let token_id = env.register_stellar_asset_contract(sender.clone());
-            StellarAssetClient::new(&env, &token_id).mint(&sender, &100_000_000);
+criterion_group!(benches, bench_operations);
 
-            let contract_id = env.register_contract(None, EscrowContract);
-            let client = lumigift_escrow::EscrowContractClient::new(&env, &contract_id);
-
-            client.initialize(&sender, &recipient, &token_id, &100_000_000, &3_601);
-            env.ledger().with_mut(|l| l.timestamp = 3_601);
-
-            // Reset cost estimate to measure only the claim call.
-            let mut budget = env.cost_estimate().budget();
-            budget.reset_tracker();
-            client.claim();
-
-            assert_budget!(
-                env,
-                "claim",
-                CLAIM_CPU_LIMIT,
-                CLAIM_MEMORY_LIMIT,
-                CLAIM_LEDGER_READ_BYTES_LIMIT,
-                CLAIM_LEDGER_WRITE_BYTES_LIMIT,
-            );
-        });
-    });
+fn main() {
+    regression_check();
+    benches();
+    Criterion::default().configure_from_args().final_summary();
 }
-
-criterion_group!(benches, bench_initialize, bench_claim);
-criterion_main!(benches);

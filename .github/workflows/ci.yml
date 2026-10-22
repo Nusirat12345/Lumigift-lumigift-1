@@ -26,6 +26,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: .gitleaks.toml
 
+  migration-lint:
+    name: Migration Safety Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Lint migrations for dangerous operations
+        run: bash scripts/lint-migrations.sh migrations
+
   lint-and-type-check:
     name: Lint & Type Check
     runs-on: ubuntu-latest
@@ -504,6 +513,9 @@ jobs:
   contract-budget:
     name: Contract Resource Budget
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v6.0.2
 
@@ -517,3 +529,20 @@ jobs:
 
       - name: Run resource budget regression benchmarks
         run: cargo bench --manifest-path contracts/escrow/Cargo.toml --bench escrow_bench -- --noplot
+
+      # Fails the job if any entry point regresses >10% vs the BENCHMARKS.md baseline
+      - name: Post benchmark results to PR
+        if: always() && github.event_name == 'pull_request' && hashFiles('contracts/target/escrow-bench-report.md') != ''
+        continue-on-error: true # fork PRs get a read-only token
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v9
+        with:
+          script: |
+            const body = require("fs").readFileSync("contracts/target/escrow-bench-report.md", "utf8");
+            const marker = "<!-- escrow-bench-report -->";
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find((c) => c.body?.includes(marker));
+            const payload = { owner, repo, body: `${marker}\n${body}` };
+            if (existing) await github.rest.issues.updateComment({ ...payload, comment_id: existing.id });
+            else await github.rest.issues.createComment({ ...payload, issue_number });
