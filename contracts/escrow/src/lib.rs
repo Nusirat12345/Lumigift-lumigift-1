@@ -82,38 +82,15 @@ pub enum EscrowError {
 // Testnet:  CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA
 
 /// USDC contract address on Stellar **mainnet** (Circle-issued).
-/// Hex of StrKey-decoded payload for:
-///   `CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75`
-const USDC_MAINNET: [u8; 32] = [
-    0x45, 0xef, 0xce, 0x6a, 0xb5, 0xd4, 0x14, 0xa0,
-    0x07, 0xf8, 0x1a, 0x8b, 0x83, 0x8b, 0x56, 0x76,
-    0x3b, 0x5e, 0x5e, 0xf5, 0xf2, 0xaa, 0xf3, 0x05,
-    0x6a, 0x1e, 0x5d, 0x28, 0xec, 0x7e, 0x0f, 0x25,
-];
+const USDC_MAINNET: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
 
 /// USDC contract address on Stellar **testnet** (Circle-issued).
-/// Hex of StrKey-decoded payload for:
-///   `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA`
-const USDC_TESTNET: [u8; 32] = [
-    0x05, 0x04, 0xb7, 0x57, 0x98, 0x0c, 0x99, 0x53,
-    0xab, 0x03, 0xef, 0xa8, 0xa9, 0xb5, 0x2b, 0xaf,
-    0xc7, 0x2c, 0x11, 0x2c, 0x01, 0xb0, 0x6c, 0x01,
-    0x0b, 0x89, 0x2e, 0x21, 0x4b, 0x58, 0x0c, 0x03,
-];
+pub const USDC_TESTNET: &str = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
 
 /// Returns `true` when `token` matches one of the allowed USDC addresses.
-///
-/// Soroban `Address` wraps an `AccountId` or `ContractId`. For contract
-/// addresses we compare the raw 32-byte contract ID (via `BytesN<32>`)
-/// against the known USDC addresses for mainnet and testnet.
 fn is_allowed_token(env: &Env, token: &Address) -> bool {
-    let mainnet_id: BytesN<32> = BytesN::from_array(env, &USDC_MAINNET);
-    let testnet_id: BytesN<32> = BytesN::from_array(env, &USDC_TESTNET);
-    // In Soroban, contract Address can be compared to a BytesN<32> contract ID.
-    // We construct Address objects from the known IDs and compare directly.
-    let mainnet_addr = Address::from_contract_id(&mainnet_id);
-    let testnet_addr = Address::from_contract_id(&testnet_id);
-    token == &mainnet_addr || token == &testnet_addr
+    token == &Address::from_str(env, USDC_MAINNET)
+        || token == &Address::from_str(env, USDC_TESTNET)
 }
 
 
