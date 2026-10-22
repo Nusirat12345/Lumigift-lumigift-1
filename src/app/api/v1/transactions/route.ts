@@ -15,6 +15,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { withAuth, withErrorHandler } from "@/server/middleware";
+import { setPrivateNoStore } from "@/lib/cache";
 import {
   getTransactionHistory,
   type TransactionPage,
@@ -34,6 +35,9 @@ export const GET = withErrorHandler(
 
     const result = await getTransactionHistory(userId, { page, limit, status });
 
-    return NextResponse.json<ApiResponse<TransactionPage>>({ success: true, data: result });
+    // User-specific transaction data must never be cached in shared caches
+    return setPrivateNoStore(
+      NextResponse.json<ApiResponse<TransactionPage>>({ success: true, data: result })
+    );
   })
 );

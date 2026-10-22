@@ -9,6 +9,12 @@ output "db_endpoint" {
   sensitive   = true
 }
 
+output "db_replica_endpoint" {
+  description = "RDS read replica endpoint (READ_REPLICA_DATABASE_URL host)"
+  value       = aws_db_instance.postgres_replica.endpoint
+  sensitive   = true
+}
+
 output "redis_endpoint" {
   description = "ElastiCache Redis endpoint"
   value       = aws_elasticache_cluster.redis.cache_nodes[0].address
@@ -37,4 +43,9 @@ output "backup_iam_secret_access_key" {
 output "backup_sns_topic_arn" {
   description = "SNS topic ARN for backup failure alerts"
   value       = aws_sns_topic.backup_alerts.arn
+}
+
+output "vercel_project_id" {
+  description = "Vercel project ID for the frontend"
+  value       = vercel_project.frontend.id
 }

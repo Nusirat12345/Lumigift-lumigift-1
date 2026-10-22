@@ -6,6 +6,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    vercel = {
+      source  = "vercel/vercel"
+      version = "~> 2.0"
+    }
   }
 
   # Remote state — store in S3 + DynamoDB lock table
@@ -21,6 +25,11 @@ terraform {
 
 provider "aws" {
   region = var.aws_region
+
+  # Applies the cost allocation tags to every taggable resource in this config
+  default_tags {
+    tags = local.tags
+  }
 }
 
 # ─── PostgreSQL (RDS) ─────────────────────────────────────────────────────────
@@ -50,6 +59,40 @@ resource "aws_db_instance" "postgres" {
   backup_window           = "02:00-03:00"    # UTC, during low-traffic hours
   maintenance_window      = "sun:03:00-sun:04:00"
   copy_tags_to_snapshot   = true
+
+  tags = local.tags
+}
+
+# ─── #359: Read replica for GET endpoints ─────────────────────────────────────
+# Serves read-heavy endpoints (dashboard, gift lookup) via
+# READ_REPLICA_DATABASE_URL. Writes always go to the primary.
+
+resource "aws_db_instance" "postgres_replica" {
+  identifier             = "lumigift-${var.env}-replica"
+  replicate_source_db    = aws_db_instance.postgres.identifier
+  instance_class         = var.db_instance_class
+  vpc_security_group_ids = [aws_security_group.db.id]
+  skip_final_snapshot    = true
+  storage_encrypted      = true
+  backup_retention_period = 7 # required so the replica can be promoted with PITR
+
+  tags = local.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "replica_lag" {
+  alarm_name          = "lumigift-${var.env}-replica-lag"
+  alarm_description   = "Read replica replication lag above 5 seconds"
+  namespace           = "AWS/RDS"
+  metric_name         = "ReplicaLag"
+  dimensions          = { DBInstanceIdentifier = aws_db_instance.postgres_replica.identifier }
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 2
+  threshold           = 5
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "breaching"
+  alarm_actions       = [aws_sns_topic.backup_alerts.arn]
+  ok_actions          = [aws_sns_topic.backup_alerts.arn]
 
   tags = local.tags
 }
@@ -226,6 +269,7 @@ resource "aws_iam_role_policy" "secrets_access" {
         ]
         Resource = [
           aws_secretsmanager_secret.db_url.arn,
+          aws_secretsmanager_secret.read_replica_db_url.arn,
           aws_secretsmanager_secret.redis_url.arn,
           aws_secretsmanager_secret.nextauth_secret.arn,
           aws_secretsmanager_secret.nextauth_secret_previous.arn,
@@ -256,6 +300,7 @@ resource "aws_apprunner_service" "app" {
         port = "3000"
         runtime_environment_secrets = {
           DATABASE_URL                 = aws_secretsmanager_secret.db_url.arn
+          READ_REPLICA_DATABASE_URL    = aws_secretsmanager_secret.read_replica_db_url.arn
           REDIS_URL                    = aws_secretsmanager_secret.redis_url.arn
           NEXTAUTH_SECRET              = aws_secretsmanager_secret.nextauth_secret.arn
           NEXTAUTH_SECRET_PREVIOUS     = aws_secretsmanager_secret.nextauth_secret_previous.arn
@@ -304,6 +349,12 @@ resource "aws_route53_record" "app" {
 
 resource "aws_secretsmanager_secret" "db_url" {
   name                    = "lumigift/${var.env}/DATABASE_URL"
+  recovery_window_in_days = 7
+  tags                    = local.tags
+}
+
+resource "aws_secretsmanager_secret" "read_replica_db_url" {
+  name                    = "lumigift/${var.env}/READ_REPLICA_DATABASE_URL"
   recovery_window_in_days = 7
   tags                    = local.tags
 }
@@ -433,10 +484,130 @@ resource "aws_security_group" "app" {
 # ─── Locals ───────────────────────────────────────────────────────────────────
 
 locals {
+  # Cost allocation tags — see docs/ops/cost-allocation-tags.md
   tags = {
-    Project     = "lumigift"
-    Environment = var.env
-    ManagedBy   = "terraform"
+    project       = var.project
+    environment   = var.env
+    owner         = var.owner
+    "cost-center" = var.cost_center
+    ManagedBy     = "terraform"
   }
+
+  cost_allocation_tag_keys = ["project", "environment", "owner", "cost-center"]
+}
+
+# ─── Cost allocation & tag compliance ─────────────────────────────────────────
+
+# Activate the tags in Billing so Cost Explorer can group/filter by them
+resource "aws_ce_cost_allocation_tag" "this" {
+  for_each = toset(local.cost_allocation_tag_keys)
+  tag_key  = each.value
+  status   = "Active"
+}
+
+resource "aws_iam_service_linked_role" "config" {
+  aws_service_name = "config.amazonaws.com"
+}
+
+resource "aws_config_configuration_recorder" "main" {
+  name     = "lumigift-${var.env}"
+  role_arn = aws_iam_service_linked_role.config.arn
+}
+
+resource "aws_s3_bucket_policy" "config_delivery" {
+  bucket = aws_s3_bucket.backups.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = { Service = "config.amazonaws.com" }
+        Action    = ["s3:GetBucketAcl", "s3:ListBucket"]
+        Resource  = aws_s3_bucket.backups.arn
+      },
+      {
+        Effect    = "Allow"
+        Principal = { Service = "config.amazonaws.com" }
+        Action    = "s3:PutObject"
+        Resource  = "${aws_s3_bucket.backups.arn}/aws-config/*"
+        Condition = { StringEquals = { "s3:x-amz-acl" = "bucket-owner-full-control" } }
+      }
+    ]
+  })
+}
+
+resource "aws_config_delivery_channel" "main" {
+  name           = "lumigift-${var.env}"
+  s3_bucket_name = aws_s3_bucket.backups.bucket
+  s3_key_prefix  = "aws-config"
+  depends_on     = [aws_config_configuration_recorder.main, aws_s3_bucket_policy.config_delivery]
+}
+
+resource "aws_config_configuration_recorder_status" "main" {
+  name       = aws_config_configuration_recorder.main.name
+  is_enabled = true
+  depends_on = [aws_config_delivery_channel.main]
+}
+
+# Flags any resource missing one of the required cost allocation tags
+resource "aws_config_config_rule" "required_tags" {
+  name = "lumigift-${var.env}-required-tags"
+
+  source {
+    owner             = "AWS"
+    source_identifier = "REQUIRED_TAGS"
+  }
+
+  input_parameters = jsonencode({
+    tag1Key = "project"
+    tag2Key = "environment"
+    tag3Key = "owner"
+    tag4Key = "cost-center"
+  })
+
+  depends_on = [aws_config_configuration_recorder_status.main]
+}
+
+# Alert ops when a resource becomes non-compliant (untagged)
+resource "aws_cloudwatch_event_rule" "untagged_resource" {
+  name = "lumigift-${var.env}-untagged-resource"
+  event_pattern = jsonencode({
+    source      = ["aws.config"]
+    detail-type = ["Config Rules Compliance Change"]
+    detail = {
+      configRuleName = [aws_config_config_rule.required_tags.name]
+      newEvaluationResult = {
+        complianceType = ["NON_COMPLIANT"]
+      }
+    }
+  })
+}
+
+resource "aws_sns_topic" "tag_compliance_alerts" {
+  name = "lumigift-${var.env}-tag-compliance-alerts"
+}
+
+resource "aws_sns_topic_subscription" "tag_compliance_alerts_email" {
+  topic_arn = aws_sns_topic.tag_compliance_alerts.arn
+  protocol  = "email"
+  endpoint  = var.ops_alert_email
+}
+
+resource "aws_cloudwatch_event_target" "untagged_resource_sns" {
+  rule = aws_cloudwatch_event_rule.untagged_resource.name
+  arn  = aws_sns_topic.tag_compliance_alerts.arn
+}
+
+resource "aws_sns_topic_policy" "tag_compliance_alerts" {
+  arn = aws_sns_topic.tag_compliance_alerts.arn
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "events.amazonaws.com" }
+      Action    = "sns:Publish"
+      Resource  = aws_sns_topic.tag_compliance_alerts.arn
+    }]
+  })
 }
 

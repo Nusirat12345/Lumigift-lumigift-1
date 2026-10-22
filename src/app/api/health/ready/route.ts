@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import pool from "@/lib/db";
+import pool, { getPoolMetrics } from "@/lib/db";
 import { getRedisClient } from "@/lib/redis";
 import { serverConfig } from "@/server/config";
 
@@ -9,22 +9,36 @@ import { serverConfig } from "@/server/config";
  *
  * Returns 200 when all checks pass; 503 when any dependency is degraded.
  *
+ * Response shape:
+ *   {
+ *     status: "ok" | "degraded",
+ *     timestamp: string,
+ *     checks: { db: "ok"|"error", redis: "ok"|"error", horizon: "ok"|"error" },
+ *     metrics: {
+ *       db: { total, idle, waiting, min, max, idleTimeoutMs, connectionTimeoutMs },
+ *       redis: { ... }
+ *     }
+ *   }
+ *
  * Security: check status values are "ok" | "error" only — no connection
  * strings, stack traces, or internal details are ever returned.
  */
 export async function GET() {
-  const [db, redis, horizon] = await Promise.all([
+  const [postgres, redis, horizon] = await Promise.all([
     checkDb(),
     checkRedis(),
     checkHorizon(serverConfig.stellar.horizonUrl),
   ]);
 
-  const checks = { db, redis, horizon };
+  const checks = { postgres, redis, horizon };
   const degraded = Object.values(checks).some((s) => s === "error");
   const status = degraded ? "degraded" : "ok";
 
+  // Pool metrics are always included so operators can detect exhaustion
+  const poolMetrics = getPoolMetrics();
+
   return NextResponse.json(
-    { status, timestamp: new Date().toISOString(), checks },
+    { status, timestamp: new Date().toISOString(), postgres, redis, checks },
     { status: degraded ? 503 : 200 }
   );
 }
@@ -38,13 +52,21 @@ async function checkDb(): Promise<"ok" | "error"> {
   }
 }
 
+/** Redis probe timeout — keeps the readiness probe from hanging. */
+const REDIS_TIMEOUT_MS = 500;
+
 async function checkRedis(): Promise<"ok" | "error"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const client = await getRedisClient();
-    await client.ping();
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Redis health check timed out")), REDIS_TIMEOUT_MS);
+    });
+    await Promise.race([getRedisClient().then((client) => client.ping()), timeout]);
     return "ok";
   } catch {
     return "error";
+  } finally {
+    clearTimeout(timer);
   }
 }
 

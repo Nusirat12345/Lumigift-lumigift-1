@@ -82,38 +82,15 @@ pub enum EscrowError {
 // Testnet:  CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA
 
 /// USDC contract address on Stellar **mainnet** (Circle-issued).
-/// Hex of StrKey-decoded payload for:
-///   `CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75`
-const USDC_MAINNET: [u8; 32] = [
-    0x45, 0xef, 0xce, 0x6a, 0xb5, 0xd4, 0x14, 0xa0,
-    0x07, 0xf8, 0x1a, 0x8b, 0x83, 0x8b, 0x56, 0x76,
-    0x3b, 0x5e, 0x5e, 0xf5, 0xf2, 0xaa, 0xf3, 0x05,
-    0x6a, 0x1e, 0x5d, 0x28, 0xec, 0x7e, 0x0f, 0x25,
-];
+const USDC_MAINNET: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
 
 /// USDC contract address on Stellar **testnet** (Circle-issued).
-/// Hex of StrKey-decoded payload for:
-///   `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA`
-const USDC_TESTNET: [u8; 32] = [
-    0x05, 0x04, 0xb7, 0x57, 0x98, 0x0c, 0x99, 0x53,
-    0xab, 0x03, 0xef, 0xa8, 0xa9, 0xb5, 0x2b, 0xaf,
-    0xc7, 0x2c, 0x11, 0x2c, 0x01, 0xb0, 0x6c, 0x01,
-    0x0b, 0x89, 0x2e, 0x21, 0x4b, 0x58, 0x0c, 0x03,
-];
+pub const USDC_TESTNET: &str = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
 
 /// Returns `true` when `token` matches one of the allowed USDC addresses.
-///
-/// Soroban `Address` wraps an `AccountId` or `ContractId`. For contract
-/// addresses we compare the raw 32-byte contract ID (via `BytesN<32>`)
-/// against the known USDC addresses for mainnet and testnet.
 fn is_allowed_token(env: &Env, token: &Address) -> bool {
-    let mainnet_id: BytesN<32> = BytesN::from_array(env, &USDC_MAINNET);
-    let testnet_id: BytesN<32> = BytesN::from_array(env, &USDC_TESTNET);
-    // In Soroban, contract Address can be compared to a BytesN<32> contract ID.
-    // We construct Address objects from the known IDs and compare directly.
-    let mainnet_addr = Address::from_contract_id(&mainnet_id);
-    let testnet_addr = Address::from_contract_id(&testnet_id);
-    token == &mainnet_addr || token == &testnet_addr
+    token == &Address::from_str(env, USDC_MAINNET)
+        || token == &Address::from_str(env, USDC_TESTNET)
 }
 
 
@@ -240,9 +217,8 @@ fn required_ttl_ledgers(env: &Env, unlock_time: u64) -> u32 {
         return BUFFER_LEDGERS;
     }
     let secs_until_unlock = unlock_time - now;
-    // Round up: add LEDGER_CLOSE_SECS - 1 before dividing.
-    let ledgers_until_unlock =
-        (secs_until_unlock + LEDGER_CLOSE_SECS - 1) / LEDGER_CLOSE_SECS;
+    // Round up without overflowing for unlock times near u64::MAX.
+    let ledgers_until_unlock = secs_until_unlock.div_ceil(LEDGER_CLOSE_SECS);
     // Saturating cast to u32; any escrow > ~680 years would overflow, which is
     // impossible given the unlock_time validation in `initialize`.
     let ledgers_u32 = ledgers_until_unlock.min(u32::MAX as u64) as u32;
@@ -1199,6 +1175,135 @@ mod property_tests {
     }
 }
 
+
+// ─── Time-lock arithmetic property tests (issue #357) ─────────────────────────
+//
+// Each proptest! runs 10 000 cases. Tests are prefixed `fuzz_` so the
+// `contract-fuzz` CI job runs them. Covers epoch 0, far-future timestamps
+// (up to u64::MAX) and edge-case amounts (0, 1, i128::MAX — the contract's
+// amount type is i128, so i128::MAX is the largest representable value).
+
+#[cfg(test)]
+mod time_lock_property_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger},
+        Env,
+    };
+
+    /// Calls `initialize` at ledger time `now` and returns the contract error,
+    /// if any. The token is a random address, so validation that passes the
+    /// amount and unlock-time checks ends at `InvalidToken`.
+    fn init_error(now: u64, amount: i128, unlock_time: u64) -> Option<EscrowError> {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = now);
+
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+
+        match client.try_initialize(&sender, &sender, &recipient, &token, &amount, &unlock_time) {
+            Err(Ok(e)) => Some(e),
+            _ => None,
+        }
+    }
+
+    fn ttl_at(now: u64, unlock_time: u64) -> u32 {
+        let env = Env::default();
+        env.ledger().with_mut(|l| l.timestamp = now);
+        required_ttl_ledgers(&env, unlock_time)
+    }
+
+    fn edge_amount() -> impl Strategy<Value = i128> {
+        prop_oneof![
+            Just(0_i128),
+            Just(1_i128),
+            Just(-1_i128),
+            Just(i128::MIN),
+            Just(MIN_AMOUNT - 1),
+            Just(MIN_AMOUNT),
+            Just(i128::MAX),
+            any::<i128>(),
+        ]
+    }
+
+    fn edge_timestamp() -> impl Strategy<Value = u64> {
+        prop_oneof![
+            Just(0_u64),
+            Just(MIN_LOCK_DURATION),
+            Just(u64::MAX - MIN_LOCK_DURATION - 1),
+            Just(u64::MAX),
+            any::<u64>(),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(10_000))]
+
+        /// Unlock times at or before `now + MIN_LOCK_DURATION` are always rejected.
+        #[test]
+        fn fuzz_past_or_near_unlock_time_rejected(now in edge_timestamp(), offset in any::<u64>()) {
+            let limit = now.saturating_add(MIN_LOCK_DURATION);
+            let unlock_time = limit - offset % limit.saturating_add(1);
+            prop_assert_eq!(
+                init_error(now, MIN_AMOUNT, unlock_time),
+                Some(EscrowError::InvalidUnlockTime)
+            );
+        }
+
+        /// Unlock times strictly after `now + MIN_LOCK_DURATION` pass the time-lock check.
+        #[test]
+        fn fuzz_future_unlock_time_accepted(
+            now in 0..=(u64::MAX - MIN_LOCK_DURATION - 1),
+            offset in any::<u64>(),
+        ) {
+            let earliest = now + MIN_LOCK_DURATION + 1;
+            let unlock_time = earliest + offset % (u64::MAX - earliest + 1);
+            prop_assert_ne!(
+                init_error(now, MIN_AMOUNT, unlock_time),
+                Some(EscrowError::InvalidUnlockTime)
+            );
+        }
+
+        /// Amounts below MIN_AMOUNT (incl. 0, 1, negatives) are rejected; all
+        /// others, up to i128::MAX, pass the amount check without overflow.
+        #[test]
+        fn fuzz_edge_amounts_respect_minimum(amount in edge_amount()) {
+            let err = init_error(0, amount, MIN_LOCK_DURATION + 1);
+            if amount < MIN_AMOUNT {
+                prop_assert_eq!(err, Some(EscrowError::InvalidAmount));
+            } else {
+                prop_assert_ne!(err, Some(EscrowError::InvalidAmount));
+            }
+        }
+
+        /// TTL never panics, is exactly the buffer once unlocked, and is at
+        /// least the buffer plus the ledgers remaining until unlock otherwise.
+        #[test]
+        fn fuzz_ttl_covers_lock_period(now in edge_timestamp(), unlock_time in edge_timestamp()) {
+            let ttl = ttl_at(now, unlock_time);
+            if unlock_time <= now {
+                prop_assert_eq!(ttl, BUFFER_LEDGERS);
+            } else {
+                let ledgers = (unlock_time - now).div_ceil(LEDGER_CLOSE_SECS);
+                let expected = (ledgers.min(u32::MAX as u64) as u32).saturating_add(BUFFER_LEDGERS);
+                prop_assert_eq!(ttl, expected);
+                prop_assert!(ttl >= BUFFER_LEDGERS);
+            }
+        }
+
+        /// TTL is monotonically non-decreasing in unlock_time.
+        #[test]
+        fn fuzz_ttl_monotonic(now in edge_timestamp(), a in edge_timestamp(), b in edge_timestamp()) {
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            prop_assert!(ttl_at(now, lo) <= ttl_at(now, hi));
+        }
+    }
+}
 
 // ─── Invariant and extended property-based tests (#82) ───────────────────────
 //
