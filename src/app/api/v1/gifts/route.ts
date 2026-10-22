@@ -8,7 +8,7 @@ import {
   getGiftsBySenderPage,
 } from "@/server/services/gift.service";
 import { decodeGiftCursor, encodeGiftCursor } from "@/server/services/gift-cursor";
-import { withErrorHandler, withCsrf } from "@/server/middleware";
+import { withErrorHandler, withCsrf, withBodySizeLimit } from "@/server/middleware";
 import {
   checkIdempotencyKey,
   storeIdempotencyResponse,
