@@ -9,6 +9,12 @@ output "db_endpoint" {
   sensitive   = true
 }
 
+output "db_replica_endpoint" {
+  description = "RDS read replica endpoint (READ_REPLICA_DATABASE_URL host)"
+  value       = aws_db_instance.postgres_replica.endpoint
+  sensitive   = true
+}
+
 output "redis_endpoint" {
   description = "ElastiCache Redis endpoint"
   value       = aws_elasticache_cluster.redis.cache_nodes[0].address

@@ -12,6 +12,7 @@ import { stripHtmlTags } from "@/lib/sanitize";
 import { createAuditLog } from "./audit.service";
 import { sendGiftReceivedEmail } from "@/lib/email";
 import type { GiftCursorPosition } from "./gift-cursor";
+import { incrementFunnelCounter, recordFunnelTransition } from "@/lib/metrics";
 
 // ─── Exchange rate helper ─────────────────────────────────────────────────────
 import { getExchangeRate, lockExchangeRate } from "@/server/services/exchange-rate.service";
@@ -103,6 +104,7 @@ export async function createGift(
   // Mirror to in-memory Map for backward-compat with callers that still read
   // from the Map (will be fully removed once all queries go through gift.db.ts)
   gifts.set(id, gift);
+  incrementFunnelCounter("gifts_created");
 
   // Lock the exchange rate for slippage protection (expires in 5 minutes)
   await lockExchangeRate(id);
@@ -201,6 +203,7 @@ export async function updateGiftStatus(id: string, status: GiftStatus): Promise<
   gift.status = status;
   gift.updatedAt = new Date();
   gifts.set(id, gift);
+  recordFunnelTransition(gift, previousStatus, status);
 
   // Publish the status change to Redis so SSE subscribers are notified in real
   // time (issue #272).  Publish is fire-and-forget — a failure must not break

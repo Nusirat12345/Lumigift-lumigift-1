@@ -39,6 +39,7 @@ export const serverConfig = {
   },
   database: {
     url: env.DATABASE_URL,
+    readReplicaUrl: env.READ_REPLICA_DATABASE_URL,
     poolMin: env.DB_POOL_MIN,
     poolMax: env.DB_POOL_MAX,
     idleTimeoutMs: env.DB_IDLE_TIMEOUT_MS,

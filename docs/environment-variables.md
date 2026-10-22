@@ -151,6 +151,23 @@ Lumigift uses PostgreSQL via the `pg` driver.
 Full PostgreSQL connection string.  
 Production deployments should use a managed database URL (Vercel Postgres, Supabase, AWS RDS) stored in the deployment environment, never in a committed file.
 
+### `READ_REPLICA_DATABASE_URL`
+
+|              |                                                                 |
+| ------------ | --------------------------------------------------------------- |
+| **Required** | No (falls back to `DATABASE_URL`)                               |
+| **Scope**    | Server only — contains credentials                              |
+| **Format**   | `postgresql://username:password@host:port/database`             |
+| **Example**  | `postgresql://lumigift:lumigift@replica.internal:5432/lumigift` |
+
+Connection string for the PostgreSQL read replica. Read-only GET endpoints
+(dashboard gift lists, recipient gift lookup, notifications, transaction
+history) use it via `readPool` from `@/lib/db`; all writes, and reads that must
+see a just-committed write, use the primary. Pool sizing (`DB_POOL_*`) applies
+to both pools. In production it is provisioned by Terraform
+(`aws_db_instance.postgres_replica`) and stored in Secrets Manager. See
+[the read replica runbook](runbooks/read-replica.md) for lag alerting and failover.
+
 ### `DB_POOL_MIN`
 
 | | |
@@ -422,6 +439,19 @@ Sender name shown on OTP SMS messages. Must be registered and approved in the Te
 
 Internal cron endpoints (`/api/v1/cron/*`) are authenticated with a static bearer token to prevent unauthorized triggering.
 
+### `METRICS_TOKEN`
+
+|              |                                   |
+| ------------ | --------------------------------- |
+| **Required** | No (endpoint disabled when unset) |
+| **Scope**    | Server only — secret              |
+| **Format**   | Random string, 32+ characters     |
+| **Example**  | `openssl rand -hex 32`            |
+
+Bearer token Prometheus sends to scrape `GET /api/metrics` (gift funnel
+counters and histograms). When unset, the endpoint returns 401 for every
+request. The Grafana dashboard and alert rules live in `infra/monitoring/`.
+
 ### `CRON_SECRET`
 
 | | |
@@ -623,6 +653,7 @@ Store as a CI secret (e.g., GitHub Actions secret) — never in `.env.local`.
 | `NEXTAUTH_ROTATION_GRACE_HOURS` | No | Server | `24` |
 | `CSRF_SECRET` | ✅ | Server | — |
 | `DATABASE_URL` | ✅ | Server | — |
+| `READ_REPLICA_DATABASE_URL` | No | Server | `DATABASE_URL` |
 | `DB_POOL_MIN` | No | Server | `2` |
 | `DB_POOL_MAX` | No | Server | `10` |
 | `DB_IDLE_TIMEOUT_MS` | No | Server | `10000` |
@@ -644,6 +675,7 @@ Store as a CI secret (e.g., GitHub Actions secret) — never in `.env.local`.
 | `TERMII_API_KEY` | ✅ | Server | — |
 | `TERMII_SENDER_ID` | No | Server | `Lumigift` |
 | `CRON_SECRET` | ✅ | Server | — |
+| `METRICS_TOKEN` | No | Server | — |
 | `REDIS_URL` | ✅ | Server | — |
 | `EXCHANGE_RATE_CACHE_TTL` | No | Server | `60` |
 | `GIFT_MIN_AMOUNT_NGN` | No | Server | `500` |

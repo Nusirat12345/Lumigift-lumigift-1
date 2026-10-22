@@ -2,6 +2,7 @@ import pool from "@/lib/db";
 import { sendExpiryGraceReminder } from "@/lib/sms";
 import { serverConfig } from "@/server/config";
 import { gifts, updateGiftStatus, isGiftUnlocked } from "./gift.service";
+import { incrementFunnelCounter } from "@/lib/metrics";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

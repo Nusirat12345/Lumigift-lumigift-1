@@ -4,7 +4,7 @@
  * Provides paginated transaction history and structured receipt data for gifts.
  * Queries the PostgreSQL database via the existing pool from @/lib/db.
  */
-import pool from "@/lib/db";
+import { readPool } from "@/lib/db";
 import { AppError, ERROR_CODES } from "@/server/errors";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -100,7 +100,7 @@ export async function getTransactionHistory(
   `;
 
   const [dataResult, countResult] = await Promise.all([
-    pool.query<{
+    readPool.query<{
       giftId: string;
       amount: number;
       provider: string;
@@ -108,7 +108,7 @@ export async function getTransactionHistory(
       status: string;
       createdAt: Date;
     }>(dataQuery, params),
-    pool.query<{ total: string }>(countQuery, params),
+    readPool.query<{ total: string }>(countQuery, params),
   ]);
 
   const total = parseInt(countResult.rows[0]?.total ?? "0", 10);
@@ -144,7 +144,7 @@ export async function getTransactionHistory(
  * @throws {AppError} NOT_FOUND if the gift does not exist.
  */
 export async function generateReceiptData(giftId: string, userId: string): Promise<ReceiptData> {
-  const result = await pool.query<{
+  const result = await readPool.query<{
     giftId: string;
     amountNgn: number;
     amountUsdc: string;

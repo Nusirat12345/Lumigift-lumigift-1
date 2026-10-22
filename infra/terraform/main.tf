@@ -63,6 +63,40 @@ resource "aws_db_instance" "postgres" {
   tags = local.tags
 }
 
+# ─── #359: Read replica for GET endpoints ─────────────────────────────────────
+# Serves read-heavy endpoints (dashboard, gift lookup) via
+# READ_REPLICA_DATABASE_URL. Writes always go to the primary.
+
+resource "aws_db_instance" "postgres_replica" {
+  identifier             = "lumigift-${var.env}-replica"
+  replicate_source_db    = aws_db_instance.postgres.identifier
+  instance_class         = var.db_instance_class
+  vpc_security_group_ids = [aws_security_group.db.id]
+  skip_final_snapshot    = true
+  storage_encrypted      = true
+  backup_retention_period = 7 # required so the replica can be promoted with PITR
+
+  tags = local.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "replica_lag" {
+  alarm_name          = "lumigift-${var.env}-replica-lag"
+  alarm_description   = "Read replica replication lag above 5 seconds"
+  namespace           = "AWS/RDS"
+  metric_name         = "ReplicaLag"
+  dimensions          = { DBInstanceIdentifier = aws_db_instance.postgres_replica.identifier }
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 2
+  threshold           = 5
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "breaching"
+  alarm_actions       = [aws_sns_topic.backup_alerts.arn]
+  ok_actions          = [aws_sns_topic.backup_alerts.arn]
+
+  tags = local.tags
+}
+
 # ─── #104: S3 bucket for encrypted pg_dump off-site backups ──────────────────
 
 resource "aws_s3_bucket" "backups" {
@@ -235,6 +269,7 @@ resource "aws_iam_role_policy" "secrets_access" {
         ]
         Resource = [
           aws_secretsmanager_secret.db_url.arn,
+          aws_secretsmanager_secret.read_replica_db_url.arn,
           aws_secretsmanager_secret.redis_url.arn,
           aws_secretsmanager_secret.nextauth_secret.arn,
           aws_secretsmanager_secret.nextauth_secret_previous.arn,
@@ -265,6 +300,7 @@ resource "aws_apprunner_service" "app" {
         port = "3000"
         runtime_environment_secrets = {
           DATABASE_URL                 = aws_secretsmanager_secret.db_url.arn
+          READ_REPLICA_DATABASE_URL    = aws_secretsmanager_secret.read_replica_db_url.arn
           REDIS_URL                    = aws_secretsmanager_secret.redis_url.arn
           NEXTAUTH_SECRET              = aws_secretsmanager_secret.nextauth_secret.arn
           NEXTAUTH_SECRET_PREVIOUS     = aws_secretsmanager_secret.nextauth_secret_previous.arn
@@ -313,6 +349,12 @@ resource "aws_route53_record" "app" {
 
 resource "aws_secretsmanager_secret" "db_url" {
   name                    = "lumigift/${var.env}/DATABASE_URL"
+  recovery_window_in_days = 7
+  tags                    = local.tags
+}
+
+resource "aws_secretsmanager_secret" "read_replica_db_url" {
+  name                    = "lumigift/${var.env}/READ_REPLICA_DATABASE_URL"
   recovery_window_in_days = 7
   tags                    = local.tags
 }
