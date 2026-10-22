@@ -55,6 +55,8 @@ function CreateGiftFormContent() {
   const [usdcEquivalent, setUsdcEquivalent] = useState("…");
   const [showUnregisteredWarning, setShowUnregisteredWarning] = useState(false);
   const [recipientRegistered, setRecipientRegistered] = useState<boolean | null>(null);
+  // Stable per-form key so network retries of the same submission are deduplicated server-side
+  const [idempotencyKey] = useState(() => crypto.randomUUID());
   const [unlockDstWarning, setUnlockDstWarning] = useState(false);
   // Raw datetime-local value — the form stores ISO for the shared Zod schema,
   // but the DST gap check needs the wall-clock time the user typed.
@@ -87,7 +89,7 @@ function CreateGiftFormContent() {
     mutationFn: async (data: CreateGiftInput) => {
       const res = await csrfFetch("/api/v1/gifts", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
         body: JSON.stringify({
           ...data,
           recipientIsRegistered: recipientRegistered ?? true,

@@ -106,6 +106,17 @@ export const POST = withErrorHandler(
       // ── Idempotency check ─────────────────────────────────────────────────────
       const idempotencyResult = await checkIdempotencyKey(idempotencyKey, userId, parsed.data);
 
+      if (idempotencyResult.type === "missing") {
+        return NextResponse.json<ApiResponse<never>>(
+          {
+            success: false,
+            error: "Idempotency-Key header is required",
+            code: "VALIDATION_ERROR",
+          },
+          { status: 422 }
+        );
+      }
+
       if (idempotencyResult.type === "invalid") {
         return NextResponse.json<ApiResponse<never>>(
           {
@@ -145,15 +156,12 @@ export const POST = withErrorHandler(
         data: { gift, paymentUrl },
       };
 
-      // Store the response only when an idempotency key was provided
-      if (idempotencyResult.type === "new") {
-        await storeIdempotencyResponse(
-          idempotencyResult.redisKey,
-          idempotencyResult.payloadHash,
-          201,
-          responseBody
-        );
-      }
+      await storeIdempotencyResponse(
+        idempotencyResult.redisKey,
+        idempotencyResult.payloadHash,
+        201,
+        responseBody
+      );
 
       return NextResponse.json(responseBody, { status: 201 });
     })
