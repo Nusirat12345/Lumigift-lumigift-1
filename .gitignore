@@ -91,6 +91,18 @@ infra/terraform/.terraform.lock.hcl
 # ── Load test artifacts ───────────────────────────────────────────────────────
 # Result files are uploaded as CI artifacts instead of being committed
 load-tests/results/
+contracts/escrow/test_snapshots/
+
+# additional ignores
+*.snap
+**/*.snap
+__snapshots__/
+**/__snapshots__/
+
+
+# Jest results
+test-results/
+.coverage/
 
 # Kiro IDE
 .kiro/

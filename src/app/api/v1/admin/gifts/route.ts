@@ -8,6 +8,9 @@ import {
 } from "@/server/services/admin-gift.service";
 import type { ApiResponse, GiftStatus } from "@/types";
 
+const DEFAULT_PAGE_SIZE = 25;
+const MAX_PAGE_SIZE = 100;
+
 export const GET = withErrorHandler(async (req: NextRequest) => {
   const auth = await requireAdmin();
   if (auth instanceof NextResponse) return auth;
@@ -21,14 +24,22 @@ export const GET = withErrorHandler(async (req: NextRequest) => {
   }
 
   const { searchParams } = req.nextUrl;
-  const page = adminListGifts({
+  const page = searchParams.has("page") ? Number(searchParams.get("page")) : undefined;
+  const pageSize = searchParams.has("pageSize")
+    ? Number(searchParams.get("pageSize"))
+    : undefined;
+
+  const result = adminListGifts({
     search: searchParams.get("search") ?? undefined,
     status: (searchParams.get("status") as GiftStatus) ?? undefined,
+    from: searchParams.get("from") ?? undefined,
+    to: searchParams.get("to") ?? undefined,
     cursor: searchParams.get("cursor") ?? undefined,
-    limit: searchParams.has("limit") ? Number(searchParams.get("limit")) : undefined,
+    page,
+    pageSize,
   });
 
   logAdminAction(auth.userId, "list_gifts", "all");
 
-  return NextResponse.json<ApiResponse<AdminGiftPage>>({ success: true, data: page });
+  return NextResponse.json<ApiResponse<AdminGiftPage>>({ success: true, data: result });
 });

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { NotificationBell } from "@/components/ui/NotificationBell";
@@ -13,14 +14,26 @@ const NAV_HREFS = [
   { href: "/dashboard", labelKey: "nav.dashboard" as const },
 ];
 
+const MOBILE_BREAKPOINT = 768;
+
 export function Navbar() {
   const pathname = usePathname();
   const { t, locale, setLocale } = useTranslation();
 
   return (
     <header className={styles.header}>
-      <nav className={`container ${styles.nav}`} aria-label="Main navigation">
-        <Link href="/" className={styles.logo} aria-label="Lumigift home">
+      <nav
+        ref={navRef}
+        className={`container ${styles.nav}`}
+        aria-label="Main navigation"
+        onKeyDown={handleKeyDown}
+      >
+        <Link
+          href="/"
+          className={styles.logo}
+          aria-label="Lumigift home"
+          onClick={handleLinkClick}
+        >
           <span className={styles.logoMark}>Z</span>
           <span className={styles.logoText}>Lumigift</span>
         </Link>
@@ -29,11 +42,13 @@ export function Navbar() {
           {NAV_HREFS.map(({ href, labelKey }) => {
             const isActive = pathname === href || pathname.startsWith(href + "/");
             return (
-              <li key={href}>
+              <li key={href} role="none">
                 <Link
                   href={href}
-                  className={`${styles.link} ${isActive ? styles.linkActive : ""}`}
-                  aria-current={isActive ? "page" : undefined}
+                  role="menuitem"
+                  className={`${styles.link} ${active ? styles.linkActive : ""}`}
+                  aria-current={active ? "page" : undefined}
+                  onClick={handleLinkClick}
                 >
                   {t(labelKey)}
                 </Link>
@@ -64,6 +79,13 @@ export function Navbar() {
           <li>
             <ThemeToggle />
           </li>
+          <li role="none">
+            <Link
+              href="/auth/login"
+              className="btn btn--primary btn--sm"
+              role="menuitem"
+              onClick={handleLinkClick}
+            >
           <li>
             <NotificationBell />
           </li>
@@ -72,7 +94,24 @@ export function Navbar() {
               {t("nav.sign_in")}
             </Link>
           </li>
+          <span ref={focusTrapEndRef} />
         </ul>
+
+        <div className={styles.navControls}>
+          <button
+            ref={buttonRef}
+            type="button"
+            className={styles.menuButton}
+            aria-expanded={menuOpen}
+            aria-controls="lumigift-mobile-menu"
+            aria-label={menuOpen ? "Close menu" : "Open menu"}
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            <span className={styles.hamburgerLine} />
+            <span className={styles.hamburgerLine} />
+            <span className={styles.hamburgerLine} />
+          </button>
+        </div>
       </nav>
     </header>
   );
